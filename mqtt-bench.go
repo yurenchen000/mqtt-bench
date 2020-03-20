@@ -127,6 +127,7 @@ func Execute(exec func(clients []MQTT.Client, opts ExecOptions, param ...string)
 		}
 		clients[i] = client
 	}
+	fmt.Printf("\n  conn finish\n")
 
 	// 如果存在连接错误，请断开连接的客户端的连接并结束该过程。
 	if hasErr {
@@ -161,22 +162,22 @@ func Execute(exec func(clients []MQTT.Client, opts ExecOptions, param ...string)
 }
 
 // 对所有客户端执行发布处理。
-// 返回发送的消息数（原则上是客户端数）。
+// 返回发送的消息数（原则上是 客户端数 x 循环次数）。
 func PublishAllClient(clients []MQTT.Client, opts ExecOptions, param ...string) int {
 	message := param[0]
 
 	wg := new(sync.WaitGroup)
 
 	totalCount := 0
-	for id := 0; id < len(clients); id++ {
+	for id := 0; id < len(clients); id++ { // 循环处理 所有 client
 		wg.Add(1)
 
 		client := clients[id]
 
-		go func(clientId int) {
+		go func(clientId int) { // 各 client 在 go routine 里 并行处理
 			defer wg.Done()
 
-			for index := 0; index < opts.Count; index++ {
+			for index := 0; index < opts.Count; index++ { // 发送 count 个消息 到 %d 主题
 				topic := fmt.Sprintf(opts.Topic+"/%d", clientId)
 
 				if Debug {
@@ -215,7 +216,7 @@ func SubscribeAllClient(clients []MQTT.Client, opts ExecOptions, param ...string
 	wg := new(sync.WaitGroup)
 
 	results := make([]*SubscribeResult, len(clients))
-	for id := 0; id < len(clients); id++ {
+	for id := 0; id < len(clients); id++ { // 所有 client 订阅 各自对应的 topic
 		wg.Add(1)
 
 		client := clients[id]
@@ -229,11 +230,11 @@ func SubscribeAllClient(clients []MQTT.Client, opts ExecOptions, param ...string
 			results[id] = DefaultHandlerResults[id]
 		}
 
-		go func(clientId int) {
+		go func(clientId int) { // go routine 等待接收消息 达到数量
 			defer wg.Done()
 
 			var loop int = 0
-			for results[clientId].Count < opts.Count {
+			for results[clientId].Count < opts.Count { // 各 client 等待自己的 接收消息数
 				loop++
 
 				if Debug {
@@ -272,8 +273,9 @@ type SubscribeResult struct {
 }
 
 // 接收消息。
+//   返回 此 client 接收消息数 (的变量地址, 会在运行中 持续更新)
 func Subscribe(client MQTT.Client, topic string, qos byte) *SubscribeResult {
-	var result *SubscribeResult = &SubscribeResult{}
+	var result *SubscribeResult = &SubscribeResult{} // 给此 client 新建了 消息数变量
 	result.Count = 0
 
 	var handler MQTT.MessageHandler = func(client MQTT.Client, msg MQTT.Message) {
@@ -309,7 +311,7 @@ func Connect(id int, execOpts ExecOptions) MQTT.Client {
 
 	// 如果ClientID在多个进程中重复，则在Broker端会成为问题，
 	// 使用进程ID并分配ID。
-	// mqttbench <进程ID的十六进制值>-<客户端的序列号>
+	// mqttbench <进程ID的十六进制值>-<客户端的序号>
 	pid := strconv.FormatInt(int64(os.Getpid()), 16)
 	clientId := fmt.Sprintf("mqttbench%s-%d", pid, id)
 
@@ -343,7 +345,7 @@ func Connect(id int, execOpts ExecOptions) MQTT.Client {
 		var result *SubscribeResult = &SubscribeResult{}
 		result.Count = 0
 
-		var handler MQTT.MessageHandler = func(client MQTT.Client, msg MQTT.Message) {
+		var handler MQTT.MessageHandler = func(client MQTT.Client, msg MQTT.Message) { // 此 client 自己的 回调函数
 			result.Count++
 			if Debug {
 				fmt.Printf("Received at defaultHandler : topic=%s, message=%s\n", msg.Topic(), msg.Payload())
@@ -351,7 +353,7 @@ func Connect(id int, execOpts ExecOptions) MQTT.Client {
 		}
 		opts.SetDefaultPublishHandler(handler)
 
-		DefaultHandlerResults[id] = result
+		DefaultHandlerResults[id] = result // 收集/记录 此 client 收到的消息数
 	}
 
 	client := MQTT.NewClient(opts)
