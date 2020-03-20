@@ -109,11 +109,20 @@ func Execute(exec func(clients []MQTT.Client, opts ExecOptions, param ...string)
 
 	clients := make([]MQTT.Client, opts.ClientNum)
 	hasErr := false
+	err_count := 0
 	for i := 0; i < opts.ClientNum; i++ {
 		client := Connect(i, opts)
 		if client == nil {
-			hasErr = true
-			break
+			err_count += 1
+			//hasErr = true
+			//break
+			fmt.Printf("\n  %5d FAIL %3d\n", i, err_count)
+			if err_count > 100 {
+				break
+			}
+		} else {
+			//err_count -= 1
+			fmt.Printf("\r  %5d OK", i)
 		}
 		clients[i] = client
 	}
