@@ -20,45 +20,45 @@ const BASE_TOPIC string = "/mqtt-bench/benchmark"
 var Debug bool = false
 var mutex = &sync.Mutex{}
 
-// Apollo用に、Subscribe時のDefaultHandlerの処理結果を保持できるようにする。
+// 对于 Apollo，在订阅时保存 DefaultHandler 的处理结果。
 var DefaultHandlerResults []*SubscribeResult
 
-// 実行オプション
+// 执行选项
 type ExecOptions struct {
 	Broker            string     // Broker URI
 	Qos               byte       // QoS(0|1|2)
 	Retain            bool       // Retain
-	Topic             string     // Topicのルート
-	Username          string     // ユーザID
-	Password          string     // パスワード
-	CertConfig        CertConfig // 認証定義
-	ClientNum         int        // クライアントの同時実行数
-	Count             int        // 1クライアント当たりのメッセージ数
-	MessageSize       int        // 1メッセージのサイズ(byte)
-	UseDefaultHandler bool       // Subscriber個別ではなく、デフォルトのMessageHandlerを利用するかどうか
-	PreTime           int        // 実行前の待機時間(ms)
-	IntervalTime      int        // メッセージ毎の実行間隔時間(ms)
+	Topic             string     // Topic 路径
+	Username          string     // 用户名
+	Password          string     // 密码
+	CertConfig        CertConfig // 证书定义
+	ClientNum         int        // 并发客户端数
+	Count             int        // 每个客户端的消息数
+	MessageSize       int        // 一条消息的大小（字节）
+	UseDefaultHandler bool       // 是否使用默认 MessageHandler 代替单独 Subscriber
+	PreTime           int        // 执行之前的等待时间（毫秒）
+	IntervalTime      int        // 每个消息的执行间隔时间（毫秒）
 }
 
-// 認証設定
+// 验证设置
 type CertConfig interface{}
 
-// サーバ認証設定
+// 服务器身份验证设置
 type ServerCertConfig struct {
 	CertConfig
-	ServerCertFile string // サーバ証明書ファイル
+	ServerCertFile string // 服务器证书文件
 }
 
-// クライアント認証設定
+// 客户端身份验证设置
 type ClientCertConfig struct {
 	CertConfig
-	RootCAFile     string // ルート証明書ファイル
-	ClientCertFile string // クライアント証明書ファイル
-	ClientKeyFile  string // クライアント公開鍵ファイル
+	RootCAFile     string // 根证书文件
+	ClientCertFile string // 客户端证书文件
+	ClientKeyFile  string // 客户端公钥文件
 }
 
-// サーバ証明書用のTLS設定を生成する。
-//   serverCertFile : サーバ証明書のファイル
+// 为服务器证书生成TLS设置。
+//   serverCertFile : 服务器证书文件
 func CreateServerTlsConfig(serverCertFile string) *tls.Config {
 	certpool := x509.NewCertPool()
 	pem, err := ioutil.ReadFile(serverCertFile)
@@ -71,10 +71,10 @@ func CreateServerTlsConfig(serverCertFile string) *tls.Config {
 	}
 }
 
-// クライアント証明書用のTLS設定を生成する。
-//   rootCAFile     : ルート証明書ファイル
-//   clientCertFile : クライアント証明書ファイル
-//   clientKeyFile  : クライアント公開鍵ファイル
+// 为客户端证书生成 TLS 设置。
+//   rootCAFile     : 根证书文件
+//   clientCertFile : 客户端证书文件
+//   clientKeyFile  : 客户端公钥文件
 func CreateClientTlsConfig(rootCAFile string, clientCertFile string, clientKeyFile string) *tls.Config {
 	certpool := x509.NewCertPool()
 	rootCA, err := ioutil.ReadFile(rootCAFile)
@@ -100,25 +100,36 @@ func CreateClientTlsConfig(rootCAFile string, clientCertFile string, clientKeyFi
 	}
 }
 
-// 実行する。
+// 执行。
 func Execute(exec func(clients []MQTT.Client, opts ExecOptions, param ...string) int, opts ExecOptions) {
 	message := CreateFixedSizeMessage(opts.MessageSize)
 
-	// 配列を初期化
+	// 初始化数组
 	DefaultHandlerResults = make([]*SubscribeResult, opts.ClientNum)
 
 	clients := make([]MQTT.Client, opts.ClientNum)
 	hasErr := false
+	err_count := 0
 	for i := 0; i < opts.ClientNum; i++ {
 		client := Connect(i, opts)
 		if client == nil {
-			hasErr = true
-			break
+			err_count += 1
+			//hasErr = true
+			//break
+			// 持续打印 当前连接数 及 其中失败次数
+			fmt.Printf("\n  %5d FAIL %3d\n", i, err_count)
+			if err_count > 100 { // 累计 100 次错误后, 放弃 后续的连接尝试 (但不中止程序, 批量测试用)
+				break
+			}
+		} else {
+			//err_count -= 1
+			fmt.Printf("\r  %5d OK", i)
 		}
 		clients[i] = client
 	}
+	fmt.Printf("\n  conn finish\n")
 
-	// 接続エラーがあれば、接続済みのクライアントの切断処理を行い、処理を終了する。
+	// 如果存在连接错误，请断开连接的客户端的连接并结束该过程。
 	if hasErr {
 		for i := 0; i < len(clients); i++ {
 			client := clients[i]
@@ -129,7 +140,7 @@ func Execute(exec func(clients []MQTT.Client, opts ExecOptions, param ...string)
 		return
 	}
 
-	// 安定させるために、一定時間待機する。
+	// 等待一段时间以稳定下来。
 	time.Sleep(time.Duration(opts.PreTime) * time.Millisecond)
 
 	fmt.Printf("%s Start benchmark\n", time.Now())
@@ -140,33 +151,33 @@ func Execute(exec func(clients []MQTT.Client, opts ExecOptions, param ...string)
 
 	fmt.Printf("%s End benchmark\n", time.Now())
 
-	// 切断に時間がかかるため、非同期で処理を行う。
+	// 由于断开连接需要时间，因此请异步处理。
 	AsyncDisconnect(clients)
 
-	// 処理結果を出力する。
+	// 输出处理结果。
 	duration := (endTime.Sub(startTime)).Nanoseconds() / int64(1000000) // nanosecond -> millisecond
 	throughput := float64(totalCount) / float64(duration) * 1000        // messages/sec
 	fmt.Printf("\nResult : broker=%s, clients=%d, totalCount=%d, duration=%dms, throughput=%.2fmessages/sec\n",
 		opts.Broker, opts.ClientNum, totalCount, duration, throughput)
 }
 
-// 全クライアントに対して、publishの処理を行う。
-// 送信したメッセージ数を返す（原則、クライアント数分となる）。
+// 对所有客户端执行发布处理。
+// 返回发送的消息数（原则上是 客户端数 x 循环次数）。
 func PublishAllClient(clients []MQTT.Client, opts ExecOptions, param ...string) int {
 	message := param[0]
 
 	wg := new(sync.WaitGroup)
 
 	totalCount := 0
-	for id := 0; id < len(clients); id++ {
+	for id := 0; id < len(clients); id++ { // 循环处理 所有 client
 		wg.Add(1)
 
 		client := clients[id]
 
-		go func(clientId int) {
+		go func(clientId int) { // 各 client 在 go routine 里 并行处理
 			defer wg.Done()
 
-			for index := 0; index < opts.Count; index++ {
+			for index := 0; index < opts.Count; index++ { // 发送 count 个消息 到 %d 主题
 				topic := fmt.Sprintf(opts.Topic+"/%d", clientId)
 
 				if Debug {
@@ -189,7 +200,7 @@ func PublishAllClient(clients []MQTT.Client, opts ExecOptions, param ...string) 
 	return totalCount
 }
 
-// メッセージを送信する。
+// 发送消息。
 func Publish(client MQTT.Client, topic string, qos byte, retain bool, message string) {
 	token := client.Publish(topic, qos, retain, message)
 
@@ -198,14 +209,14 @@ func Publish(client MQTT.Client, topic string, qos byte, retain bool, message st
 	}
 }
 
-// 全クライアントに対して、subscribeの処理を行う。
-// 指定されたカウント数分、メッセージを受信待ちする（メッセージが取得できない場合はカウントされない）。
-// この処理では、Publishし続けながら、Subscribeの処理を行う。
+// 为所有客户端执行订阅过程。
+// 等待指定的计数次数以接收消息（如果无法获取消息，则不会计数）。
+// 在此过程中，在继续发布的同时执行“订阅”过程。
 func SubscribeAllClient(clients []MQTT.Client, opts ExecOptions, param ...string) int {
 	wg := new(sync.WaitGroup)
 
 	results := make([]*SubscribeResult, len(clients))
-	for id := 0; id < len(clients); id++ {
+	for id := 0; id < len(clients); id++ { // 所有 client 订阅 各自对应的 topic
 		wg.Add(1)
 
 		client := clients[id]
@@ -213,17 +224,17 @@ func SubscribeAllClient(clients []MQTT.Client, opts ExecOptions, param ...string
 
 		results[id] = Subscribe(client, topic, opts.Qos)
 
-		// DefaultHandlerを利用する場合は、Subscribe個別のHandlerではなく、
-		// DefaultHandlerの処理結果を参照する。
+		// 使用 DefaultHandler 时，而不是用于订阅的单个Handler
+		// 参考 DefaultHandler 的处理结果。
 		if opts.UseDefaultHandler == true {
 			results[id] = DefaultHandlerResults[id]
 		}
 
-		go func(clientId int) {
+		go func(clientId int) { // go routine 等待接收消息 达到数量
 			defer wg.Done()
 
 			var loop int = 0
-			for results[clientId].Count < opts.Count {
+			for results[clientId].Count < opts.Count { // 各 client 等待自己的 接收消息数
 				loop++
 
 				if Debug {
@@ -233,11 +244,11 @@ func SubscribeAllClient(clients []MQTT.Client, opts ExecOptions, param ...string
 				if opts.IntervalTime > 0 {
 					time.Sleep(time.Duration(opts.IntervalTime) * time.Millisecond)
 				} else {
-					// for文による負荷を下げるため、最低でも1000ナノ秒（0.001ミリ秒）は待機する。
+					// 等待至少1000纳秒（0.001毫秒）以减少for语句的负载。
 					time.Sleep(1000 * time.Nanosecond)
 				}
 
-				// 無限ループを避けるため、指定されたCountの100倍に達したら、エラーで終了する。
+				// 为了避免无限循环，在指定的Count达到100次时以错误终止。
 				if loop >= opts.Count*100 {
 					panic("Subscribe error : Not finished in the max count. It may not be received the message.")
 				}
@@ -247,7 +258,7 @@ func SubscribeAllClient(clients []MQTT.Client, opts ExecOptions, param ...string
 
 	wg.Wait()
 
-	// 受信メッセージ数をカウント
+	// 计算收到的消息数
 	totalCount := 0
 	for id := 0; id < len(results); id++ {
 		totalCount += results[id].Count
@@ -256,14 +267,15 @@ func SubscribeAllClient(clients []MQTT.Client, opts ExecOptions, param ...string
 	return totalCount
 }
 
-// Subscribeの処理結果
+// 订阅的处理结果
 type SubscribeResult struct {
-	Count int // 受信メッセージ数
+	Count int // 收到的消息数
 }
 
-// メッセージを受信する。
+// 接收消息。
+//   返回 此 client 接收消息数 (的变量地址, 会在运行中 持续更新)
 func Subscribe(client MQTT.Client, topic string, qos byte) *SubscribeResult {
-	var result *SubscribeResult = &SubscribeResult{}
+	var result *SubscribeResult = &SubscribeResult{} // 给此 client 新建了 消息数变量
 	result.Count = 0
 
 	var handler MQTT.MessageHandler = func(client MQTT.Client, msg MQTT.Message) {
@@ -282,7 +294,7 @@ func Subscribe(client MQTT.Client, topic string, qos byte) *SubscribeResult {
 	return result
 }
 
-// 固定サイズのメッセージを生成する。
+// 生成固定大小的消息。
 func CreateFixedSizeMessage(size int) string {
 	var buffer bytes.Buffer
 	for i := 0; i < size; i++ {
@@ -293,13 +305,13 @@ func CreateFixedSizeMessage(size int) string {
 	return message
 }
 
-// 指定されたBrokerへ接続し、そのMQTTクライアントを返す。
-// 接続に失敗した場合は nil を返す。
+// 连接到指定的 Broker 并返回其 MQTT 客户端。
+// 如果连接失败，则返回 nil。
 func Connect(id int, execOpts ExecOptions) MQTT.Client {
 
-	// 複数プロセスで、ClientIDが重複すると、Broker側で問題となるため、
-	// プロセスIDを利用して、IDを割り振る。
-	// mqttbench<プロセスIDの16進数値>-<クライアントの連番>
+	// 如果ClientID在多个进程中重复，则在Broker端会成为问题，
+	// 使用进程ID并分配ID。
+	// mqttbench <进程ID的十六进制值>-<客户端的序号>
 	pid := strconv.FormatInt(int64(os.Getpid()), 16)
 	clientId := fmt.Sprintf("mqttbench%s-%d", pid, id)
 
@@ -314,7 +326,7 @@ func Connect(id int, execOpts ExecOptions) MQTT.Client {
 		opts.SetPassword(execOpts.Password)
 	}
 
-	// TLSの設定
+	// TLS设置
 	certConfig := execOpts.CertConfig
 	switch c := certConfig.(type) {
 	case ServerCertConfig:
@@ -328,12 +340,12 @@ func Connect(id int, execOpts ExecOptions) MQTT.Client {
 	}
 
 	if execOpts.UseDefaultHandler == true {
-		// Apollo(1.7.1利用)の場合、DefaultPublishHandlerを指定しないと、Subscribeできない。
-		// ただし、指定した場合でもretainされたメッセージは最初の1度しか取得されず、2回目以降のアクセスでは空になる点に注意。
+		// 如果是 Apollo（使用1.7.1），除非指定了 DefaultPublishHandler，否则无法完成订阅。
+		// 但是，请注意，即使指定了保留的消息，第一次也只会提取一次，在第二次访问之后将为空。
 		var result *SubscribeResult = &SubscribeResult{}
 		result.Count = 0
 
-		var handler MQTT.MessageHandler = func(client MQTT.Client, msg MQTT.Message) {
+		var handler MQTT.MessageHandler = func(client MQTT.Client, msg MQTT.Message) { // 此 client 自己的 回调函数
 			result.Count++
 			if Debug {
 				fmt.Printf("Received at defaultHandler : topic=%s, message=%s\n", msg.Topic(), msg.Payload())
@@ -341,7 +353,7 @@ func Connect(id int, execOpts ExecOptions) MQTT.Client {
 		}
 		opts.SetDefaultPublishHandler(handler)
 
-		DefaultHandlerResults[id] = result
+		DefaultHandlerResults[id] = result // 收集/记录 此 client 收到的消息数
 	}
 
 	client := MQTT.NewClient(opts)
@@ -355,7 +367,7 @@ func Connect(id int, execOpts ExecOptions) MQTT.Client {
 	return client
 }
 
-// 非同期でBrokerとの接続を切断する。
+// 异步断开与 Broker 的连接。
 func AsyncDisconnect(clients []MQTT.Client) {
 	wg := new(sync.WaitGroup)
 
@@ -370,14 +382,14 @@ func AsyncDisconnect(clients []MQTT.Client) {
 	wg.Wait()
 }
 
-// Brokerとの接続を切断する。
+// 与 Broker 断开连接。
 func Disconnect(client MQTT.Client) {
 	client.Disconnect(10)
 }
 
-// ファイルの存在チェックを行う。
-// ファイルが存在する場合はtrue、存在しない場合はfalseを返す。
-//   filePath : 存在をチェックするファイルのパス
+// 检查文件是否存在。
+// 如果文件存在，则返回 true，否则返回 false。
+//   filePath：要检查是否存在的文件路径
 func FileExists(filePath string) bool {
 	_, err := os.Stat(filePath)
 	return err == nil
